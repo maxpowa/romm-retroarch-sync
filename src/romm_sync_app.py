@@ -1382,18 +1382,38 @@ class EnhancedLibrarySection:
 
                     collection_id = collection.get('id')
 
-                    # Use collections cache if available to avoid full fetch on startup
-                    cache_key = f"{collection_id}:{collection_name}"
-                    if hasattr(self, '_collections_rom_cache') and cache_key in self._collections_rom_cache:
-                        collection_roms = self._collections_rom_cache[cache_key]
-                    else:
-                        collection_roms = self.parent.romm_client.get_collection_roms(collection_id)
+                    # Always fetch fresh data for auto-sync downloads so that
+                    # _sibling_files grouping is current (disk cache may predate
+                    # the siblings fix and have ungrouped data).
+                    collection_roms = self.parent.romm_client.get_collection_roms(collection_id)
 
                     download_dir = Path(self.parent.rom_dir_row.get_text())
                     games_to_download = []
 
+                    # Build parent-folder lookup (same logic as load_collections).
+                    _parent_by_filename = {}
+                    for _r in collection_roms:
+                        if not _r.get('fs_extension', '') and _r.get('files', []):
+                            for _f in _r.get('files', []):
+                                _fname = _f.get('filename') or _f.get('file_name', '')
+                                if _fname:
+                                    _parent_by_filename[_fname] = _r
+
                     for rom in collection_roms:
+                        # Skip folder-container ROMs (no file extension, has child files).
+                        # These are never directly downloadable — their content is
+                        # populated implicitly when the variant files inside them are
+                        # downloaded via the parent-ROM fallback path.
+                        if not rom.get('fs_extension', '') and rom.get('files', []):
+                            continue
+
                         processed_game = self.parent.process_single_rom(rom, download_dir)
+
+                        # Inject parent-ROM reference for 404-fallback downloads.
+                        _rom_fs_name = rom.get('fs_name', '')
+                        if _rom_fs_name and _rom_fs_name in _parent_by_filename:
+                            processed_game['_parent_rom'] = _parent_by_filename[_rom_fs_name]
+                            processed_game['_fs_extension'] = rom.get('fs_extension', '')
 
                         if not processed_game.get('is_downloaded'):
                             games_to_download.append(processed_game)
@@ -1467,8 +1487,33 @@ class EnhancedLibrarySection:
                         elif collection_name in self.currently_downloading_collections:
                             new_status = 'syncing'  # Orange dot - currently downloading
                         elif collection_name in self.actively_syncing_collections:
-                            # Check if all games are downloaded
-                            all_downloaded = all(g.get('is_downloaded', False) for g in item.games)
+                            # Re-check download state from disk.  item.games may have
+                            # stale is_downloaded=False flags if files were downloaded
+                            # during this session (process_single_rom isn't re-run).
+                            all_downloaded = True
+                            for g in item.games:
+                                local_path_str = g.get('local_path', '')
+                                if not local_path_str:
+                                    all_downloaded = False
+                                    break
+                                lp = Path(local_path_str)
+                                if not self.is_path_validly_downloaded(lp):
+                                    # Variant files land inside a parent-named subdir;
+                                    # scan one level of subdirectories as a fallback.
+                                    found_in_sub = False
+                                    parent_dir = lp.parent
+                                    fname = lp.name
+                                    if parent_dir.exists():
+                                        try:
+                                            for sub in parent_dir.iterdir():
+                                                if sub.is_dir() and self.is_path_validly_downloaded(sub / fname):
+                                                    found_in_sub = True
+                                                    break
+                                        except (OSError, PermissionError):
+                                            pass
+                                    if not found_in_sub:
+                                        all_downloaded = False
+                                        break
                             new_status = 'synced' if all_downloaded else 'disabled'  # Green if synced, grey if not
                         else:
                             new_status = 'disabled'  # Grey dot (not enabled)
@@ -1493,6 +1538,10 @@ class EnhancedLibrarySection:
             rom_name = game['name']
             platform_slug = game.get('platform_slug', game.get('platform', 'Unknown'))
             file_name = game['file_name']
+
+            # Skip if another download path is already handling this ROM
+            if self.parent.download_progress.get(rom_id, {}).get('downloading'):
+                return True
 
             # Get download directory
             download_dir = Path(self.parent.rom_dir_row.get_text())
@@ -1536,6 +1585,19 @@ class EnhancedLibrarySection:
             success, message = self.parent.romm_client.download_rom(
                 rom_id, rom_name, download_path, progress_callback
             )
+
+            # Child-file variants (e.g. regional ROMs stored inside a parent folder)
+            # cannot be downloaded via their own ROM ID — the API returns 404.
+            # Fall back to downloading via the parent folder ROM + file_id.
+            if not success and 'HTTP 404' in (message or '') and game.get('_fs_extension') and (game.get('_parent_rom') or game.get('_siblings')):
+                self.parent.log_message(f"  ↩ Direct download 404; trying via parent folder ROM...")
+                parent_success, parent_message, parent_path = self.parent._download_via_parent_rom(
+                    game, file_name, platform_dir, progress_callback, lambda: False
+                )
+                if parent_success:
+                    success = True
+                    if parent_path:
+                        download_path = parent_path
 
             # Mark as completed or failed
             if success:
@@ -1734,6 +1796,15 @@ class EnhancedLibrarySection:
 
                     download_dir = Path(self.parent.rom_dir_row.get_text())
 
+                    # Build parent-folder lookup for 404-fallback downloads.
+                    _parent_by_filename = {}
+                    for _r in collection_roms:
+                        if not _r.get('fs_extension', '') and _r.get('files', []):
+                            for _f in _r.get('files', []):
+                                _fname = _f.get('filename') or _f.get('file_name', '')
+                                if _fname:
+                                    _parent_by_filename[_fname] = _r
+
                     # Track collection-specific data
                     collections_data[collection_name] = {
                         'total': len(collection_roms),
@@ -1742,7 +1813,14 @@ class EnhancedLibrarySection:
                     }
 
                     for rom in collection_roms:
+                        if not rom.get('fs_extension', '') and rom.get('files', []):
+                            continue  # Skip folder-container ROMs
                         processed_game = self.parent.process_single_rom(rom, download_dir)
+
+                        _rom_fs_name = rom.get('fs_name', '')
+                        if _rom_fs_name and _rom_fs_name in _parent_by_filename:
+                            processed_game['_parent_rom'] = _parent_by_filename[_rom_fs_name]
+                            processed_game['_fs_extension'] = rom.get('fs_extension', '')
 
                         if not processed_game.get('is_downloaded'):
                             # Tag game with collection name for tracking
@@ -1923,6 +2001,15 @@ class EnhancedLibrarySection:
                 # Create a stable reference to collection name
                 current_collection = str(collection_name)
 
+                # Build parent-folder lookup for 404-fallback downloads.
+                _parent_by_filename = {}
+                for _r in collection_roms:
+                    if not _r.get('fs_extension', '') and _r.get('files', []):
+                        for _f in _r.get('files', []):
+                            _fname = _f.get('filename') or _f.get('file_name', '')
+                            if _fname:
+                                _parent_by_filename[_fname] = _r
+
                 # First pass: check how many are already downloaded
                 for rom in collection_roms:
                     if rom.get('id') not in added_rom_ids:
@@ -1943,6 +2030,12 @@ class EnhancedLibrarySection:
 
                     # Process the new ROM
                     processed_game = self.parent.process_single_rom(rom, download_dir)
+
+                    # Inject parent-ROM reference for 404-fallback downloads.
+                    _rom_fs_name = rom.get('fs_name', '')
+                    if _rom_fs_name and _rom_fs_name in _parent_by_filename:
+                        processed_game['_parent_rom'] = _parent_by_filename[_rom_fs_name]
+                        processed_game['_fs_extension'] = rom.get('fs_extension', '')
 
                     # Skip if already downloaded (already counted in first pass)
                     if processed_game.get('is_downloaded'):
@@ -2205,8 +2298,23 @@ class EnhancedLibrarySection:
                     download_dir = Path(self.parent.rom_dir_row.get_text())
                     games_to_download = []
 
+                    # Build parent-folder lookup for 404-fallback downloads.
+                    _parent_by_filename = {}
+                    for _r in collection_roms:
+                        if not _r.get('fs_extension', '') and _r.get('files', []):
+                            for _f in _r.get('files', []):
+                                _fname = _f.get('filename') or _f.get('file_name', '')
+                                if _fname:
+                                    _parent_by_filename[_fname] = _r
+
                     for rom in collection_roms:
+                        if not rom.get('fs_extension', '') and rom.get('files', []):
+                            continue  # Skip folder-container ROMs
                         processed_game = self.parent.process_single_rom(rom, download_dir)
+                        _rom_fs_name = rom.get('fs_name', '')
+                        if _rom_fs_name and _rom_fs_name in _parent_by_filename:
+                            processed_game['_parent_rom'] = _parent_by_filename[_rom_fs_name]
+                            processed_game['_fs_extension'] = rom.get('fs_extension', '')
                         if not processed_game.get('is_downloaded'):
                             processed_game['collection'] = collection_name
                             games_to_download.append(processed_game)
@@ -2720,17 +2828,38 @@ class EnhancedLibrarySection:
                             
                             if not collections_changed:
                                 with open(games_cache_file, 'r') as f:
-                                    cached_games = json.load(f)
+                                    cache_data = json.load(f)
 
-                                # Update download status by checking filesystem
+                                # Version check: old cache is a plain list; new cache
+                                # is {"v": 2, "games": [...]} with folder ROMs excluded.
+                                # Reject old format so stale entries are never shown.
+                                if not isinstance(cache_data, dict) or cache_data.get('v') != 4:
+                                    print("🔄 Stale games cache format, rebuilding...")
+                                    raise ValueError("stale cache version")
+
+                                cached_games = cache_data['games']
+
+                                # Update download status by checking filesystem.
+                                # Variant files land inside a parent-named subdirectory,
+                                # so scan one level deep when the flat path misses.
                                 download_dir = Path(self.parent.rom_dir_row.get_text())
                                 downloaded_count = 0
                                 for game in cached_games:
                                     platform_slug = game.get('platform_slug') or game.get('platform', 'Unknown')
                                     file_name = game.get('file_name')
                                     if file_name:
-                                        local_path = download_dir / platform_slug / file_name
+                                        platform_dir = download_dir / platform_slug
+                                        local_path = platform_dir / file_name
                                         is_downloaded = self.is_path_validly_downloaded(local_path)
+                                        if not is_downloaded and platform_dir.exists():
+                                            try:
+                                                for _sub in platform_dir.iterdir():
+                                                    if _sub.is_dir() and self.is_path_validly_downloaded(_sub / file_name):
+                                                        local_path = _sub / file_name
+                                                        is_downloaded = True
+                                                        break
+                                            except (OSError, PermissionError):
+                                                pass
                                         game['is_downloaded'] = is_downloaded
                                         game['local_path'] = str(local_path) if is_downloaded else None
                                         if is_downloaded:
@@ -2777,11 +2906,12 @@ class EnhancedLibrarySection:
                 all_collections = self.parent.romm_client.get_collections()
                 custom_collections = [c for c in all_collections if not c.get('is_auto_generated', False)]
                 
-                collections_to_fetch = []
-                for collection in custom_collections:
-                    cache_key = f"{collection.get('id')}:{collection.get('name')}"
-                    if cache_key not in self._collections_rom_cache:
-                        collections_to_fetch.append(collection)
+                # Always re-fetch all collection ROM lists when rebuilding the games
+                # cache.  The per-collection ROM cache cannot detect membership changes
+                # (e.g. ROMs added to a collection after the cache was last saved), so
+                # relying on it produces stale results.  The ROM cache is still written
+                # after a fresh fetch so future no-op runs are fast.
+                collections_to_fetch = list(custom_collections)
                 
                 if collections_to_fetch:
                     print(f"⚡ Fetching {len(collections_to_fetch)} new collections")
@@ -2800,12 +2930,39 @@ class EnhancedLibrarySection:
 
                 for collection in custom_collections:
                     cache_key = f"{collection.get('id')}:{collection.get('name')}"
-                    for rom in self._collections_rom_cache.get(cache_key, []):
+                    collection_roms = self._collections_rom_cache.get(cache_key, [])
+
+                    # Build parent-folder lookup so child ROMs get _parent_rom set.
+                    _parent_by_filename = {}
+                    for _r in collection_roms:
+                        if not _r.get('fs_extension', '') and _r.get('files', []):
+                            for _f in _r.get('files', []):
+                                _fname = _f.get('filename') or _f.get('file_name', '')
+                                if _fname:
+                                    _parent_by_filename[_fname] = _r
+
+                    for rom in collection_roms:
+                        # Skip folder-container ROMs — not directly playable/downloadable.
+                        if not rom.get('fs_extension', '') and rom.get('files', []):
+                            continue
+
                         # Check if file is actually downloaded
                         platform_slug = rom.get('platform_slug') or rom.get('platform_name', 'Unknown')
                         file_name = rom.get('fs_name')
-                        local_path = download_dir / platform_slug / file_name if file_name else None
+                        platform_dir = download_dir / platform_slug
+                        local_path = platform_dir / file_name if file_name else None
                         is_downloaded = local_path and self.is_path_validly_downloaded(local_path)
+
+                        # Variant files land in a parent-named subdirectory; scan one level.
+                        if not is_downloaded and file_name and platform_dir.exists():
+                            try:
+                                for _sub in platform_dir.iterdir():
+                                    if _sub.is_dir() and self.is_path_validly_downloaded(_sub / file_name):
+                                        local_path = _sub / file_name
+                                        is_downloaded = True
+                                        break
+                            except (OSError, PermissionError):
+                                pass
 
                         # Get file size from local file if downloaded, otherwise from ROM metadata
                         local_size = 0
@@ -2823,20 +2980,27 @@ class EnhancedLibrarySection:
                             'name': Path(rom.get('fs_name', 'unknown')).stem,
                             'rom_id': rom.get('id'),
                             'platform': rom.get('platform_name', 'Unknown'),
-                            'platform_slug': platform_slug,  # Store slug for future use
-                            'file_name': rom.get('fs_name'),
+                            'platform_slug': platform_slug,
+                            'file_name': file_name,
                             'is_downloaded': is_downloaded,
                             'local_path': str(local_path) if is_downloaded else None,
-                            'local_size': local_size,  # Add size info
-                            'romm_data': romm_data,  # Add romm_data for total size display
+                            'local_size': local_size,
+                            'romm_data': romm_data,
                             'collection': collection.get('name')
                         }
+
+                        # Inject parent-ROM reference for 404-fallback downloads.
+                        if file_name and file_name in _parent_by_filename:
+                            game['_parent_rom'] = _parent_by_filename[file_name]
+                            game['_fs_extension'] = rom.get('fs_extension', '')
+
                         all_collection_games.append(game)
                 
-                # Save processed games cache
+                # Save processed games cache (versioned format — v3 excludes folder ROMs,
+                # has _parent_rom on child variants, and was built from ungrouped ROM data)
                 try:
                     with open(games_cache_file, 'w') as f:
-                        json.dump(all_collection_games, f)
+                        json.dump({'v': 4, 'games': all_collection_games}, f)
                     # Save collection metadata for cache validation
                     collection_ids = [str(c.get('id')) for c in custom_collections]
                     with open(collections_meta_file, 'w') as f:
@@ -4174,9 +4338,33 @@ class EnhancedLibrarySection:
                     else:
                         collection_sync_status[collection_name] = 'disabled'
 
+                    # Build a lookup of parent folder ROMs by child filename so that
+                    # download_game can find the parent without extra API calls.
+                    # RomM's siblings[] field lists peer variants, NOT the parent folder,
+                    # so we derive the relationship from the folder ROM's files[] here.
+                    _parent_by_filename = {}
+                    for _r in collection_roms:
+                        if not _r.get('fs_extension', '') and _r.get('files', []):
+                            for _f in _r.get('files', []):
+                                _fname = _f.get('filename') or _f.get('file_name', '')
+                                if _fname:
+                                    _parent_by_filename[_fname] = _r
+
                     for rom in collection_roms:
+                        # Folder-container ROMs are not playable games; they are
+                        # populated implicitly when their variant files are downloaded.
+                        if not rom.get('fs_extension', '') and rom.get('files', []):
+                            continue
+
                         # First process the ROM normally
                         processed_game = self.parent.process_single_rom(rom, Path(self.parent.rom_dir_row.get_text()))
+
+                        # Inject parent-ROM reference so the 404 fallback can find
+                        # the folder ROM without scanning siblings at download time.
+                        _rom_fs_name = rom.get('fs_name', '')
+                        if _rom_fs_name and _rom_fs_name in _parent_by_filename:
+                            processed_game['_parent_rom'] = _parent_by_filename[_rom_fs_name]
+                            processed_game['_fs_extension'] = rom.get('fs_extension', '')
 
                         # Then merge with existing game data to preserve download status
                         rom_id = rom.get('id')
@@ -7149,6 +7337,21 @@ class SyncWindow(Gtk.ApplicationWindow):
         # Check download status (handles both files and folders)
         is_downloaded = self.is_path_validly_downloaded(local_path)
 
+        # Child-file ROMs (variants stored inside a parent folder ROM) will not be
+        # found at the flat platform_dir/filename path.  If the flat check fails and
+        # this ROM has siblings, scan immediate subdirectories of the platform dir.
+        if not is_downloaded and rom.get('siblings') and platform_dir.exists():
+            try:
+                for subdir in platform_dir.iterdir():
+                    if subdir.is_dir():
+                        candidate = subdir / file_name
+                        if self.is_path_validly_downloaded(candidate):
+                            local_path = candidate
+                            is_downloaded = True
+                            break
+            except (OSError, PermissionError):
+                pass
+
         display_name = Path(file_name).stem if file_name else rom.get('name', 'Unknown')
 
         # Check for multi-disc games from API data OR local filesystem
@@ -7317,6 +7520,13 @@ class SyncWindow(Gtk.ApplicationWindow):
             # Store sibling data for UI display (similar to discs)
             game_data['_sibling_files'] = sibling_files
             print(f"Preserving {len(sibling_files)} sibling(s) for '{display_name}'")
+
+        # Store raw sibling relationship so the download path can locate the
+        # parent folder ROM when this entry is a child file (collection view).
+        raw_siblings = rom.get('siblings', [])
+        if raw_siblings:
+            game_data['_siblings'] = raw_siblings
+            game_data['_fs_extension'] = rom.get('fs_extension', '')
 
         return game_data
 
@@ -10652,6 +10862,73 @@ class SyncWindow(Gtk.ApplicationWindow):
         threading.Thread(target=download, daemon=True).start()
 
 
+    def _download_via_parent_rom(self, game, file_name, platform_dir, progress_callback, cancellation_checker):
+        """Download a child-file ROM via its parent folder ROM's endpoint + file_id.
+
+        Used when a collection entry is a file stored inside a parent folder ROM
+        (direct download via the child's own ROM ID gives HTTP 404).
+
+        Returns (success, message, actual_path) where actual_path is the Path where
+        the file was saved, or (False, None, None) if no suitable parent found.
+        """
+        from urllib.parse import urljoin
+
+        def _attempt_parent(parent_data):
+            """Try downloading file_name via a specific parent ROM dict."""
+            parent_id = parent_data.get('id')
+            if not parent_id:
+                return False, None, None
+            parent_files = parent_data.get('files', [])
+            matching = next(
+                (f for f in parent_files
+                 if (f.get('filename') or f.get('file_name', '')) == file_name),
+                None
+            )
+            if not matching or not matching.get('id'):
+                return False, None, None
+            file_id = matching['id']
+            parent_folder_name = parent_data.get('fs_name') or parent_data.get('name', str(parent_id))
+            actual_path = platform_dir / parent_folder_name / file_name
+            download_path = platform_dir / file_name
+            self.log_message(f"  ↩ Downloading via parent ROM {parent_id} (file_id={file_id})")
+            success, message = self.romm_client.download_rom(
+                parent_id, file_name, download_path,
+                progress_callback=progress_callback,
+                cancellation_checker=cancellation_checker,
+                file_ids=str(file_id)
+            )
+            return success, message, actual_path
+
+        # Fast path: use the pre-computed parent ROM stored at collection-load time.
+        # This avoids extra API calls and works even when siblings[] omits the parent.
+        if game.get('_parent_rom'):
+            result = _attempt_parent(game['_parent_rom'])
+            if result[0]:
+                return result
+
+        # Slow-path fallback: fetch each sibling and check if it is a folder ROM.
+        for sib in game.get('_siblings', []):
+            sib_id = sib.get('id')
+            if not sib_id:
+                continue
+            try:
+                resp = self.romm_client.session.get(
+                    urljoin(self.romm_client.base_url, f'/api/roms/{sib_id}'),
+                    timeout=10
+                )
+                if resp.status_code != 200:
+                    continue
+                sib_details = resp.json()
+                if sib_details.get('fs_extension', ''):
+                    continue  # not a folder ROM
+                result = _attempt_parent(sib_details)
+                if result[0]:
+                    return result
+            except Exception as e:
+                print(f"_download_via_parent_rom: error checking sibling {sib_id}: {e}")
+
+        return False, None, None
+
     def download_game(self, game, is_bulk_operation=False):
         """Download a single game from RomM and its saves (with BIOS check)"""
 
@@ -10707,6 +10984,10 @@ class SyncWindow(Gtk.ApplicationWindow):
                 platform = game['platform']
                 platform_slug = game.get('platform_slug', platform)
                 file_name = game['file_name']
+
+                # Skip if another download path is already handling this ROM
+                if self.download_progress.get(rom_id, {}).get('downloading'):
+                    return
 
                 # Track current download for progress updates
                 self._current_download_rom_id = rom_id
@@ -10810,6 +11091,7 @@ class SyncWindow(Gtk.ApplicationWindow):
 
                         # Track cumulative progress across all files
                         cumulative_downloaded = 0
+                        completed_count = 0
                         success = True
                         message = "Download complete"
                         current_child_progress = 0  # Track progress of current file
@@ -10951,6 +11233,14 @@ class SyncWindow(Gtk.ApplicationWindow):
                                 success = False
                                 message = f"Failed to download {variant_name}"
                                 break
+
+                        # If the loop completed without downloading anything (all siblings
+                        # skipped because no file IDs were found), treat as failure so the
+                        # game is not falsely marked as downloaded.
+                        if success and completed_count == 0:
+                            success = False
+                            message = "No variant files could be downloaded (file IDs not found in parent ROM)"
+                            self.log_message(f"  ❌ {message}")
                 else:
                     # Single file download - use existing logic
                     def update_all_progress(progress):
@@ -10961,6 +11251,21 @@ class SyncWindow(Gtk.ApplicationWindow):
                         progress_callback=update_all_progress,
                         cancellation_checker=is_cancelled
                     )
+
+                    # If direct download gave 404 and this ROM has siblings, it is
+                    # likely a child file stored inside a parent folder ROM.  Try
+                    # to locate the parent and download via parent ID + file_id.
+                    if not success and 'HTTP 404' in message and game.get('_fs_extension') and (game.get('_siblings') or game.get('_parent_rom')):
+                        self.log_message(f"  ↩ Direct download failed (404); trying via parent folder ROM...")
+                        parent_success, parent_message, parent_path = self._download_via_parent_rom(
+                            game, file_name, platform_dir, update_all_progress, is_cancelled
+                        )
+                        if parent_success:
+                            success = True
+                            message = parent_message
+                            # Update download_path so success handling records the correct local_path
+                            if parent_path:
+                                download_path = parent_path
 
                 if success:
                     # Mark download complete
@@ -11282,11 +11587,22 @@ class SyncWindow(Gtk.ApplicationWindow):
                     # Clean up throttling data on error
                     if rom_id in self._last_progress_update:
                         del self._last_progress_update[rom_id]
-                        
+
                     GLib.idle_add(lambda: self.library_section.update_game_progress(rom_id, self.download_progress[rom_id])
                                 if hasattr(self, 'library_section') else None)
-                
-                GLib.idle_add(lambda err=str(e), n=game['name']: 
+
+                # Schedule cleanup of download_progress so wait_and_update can unblock.
+                # The normal path calls cleanup_progress() defined inside the try block,
+                # but exceptions bypass that — without this the entry lingers forever.
+                _exc_rom_id = locals().get('rom_id') or getattr(self, '_current_download_rom_id', None)
+                if _exc_rom_id:
+                    def _exc_cleanup(rid=_exc_rom_id):
+                        time.sleep(3)
+                        self.download_progress.pop(rid, None)
+                        self._last_progress_update.pop(rid, None)
+                    threading.Thread(target=_exc_cleanup, daemon=True).start()
+
+                GLib.idle_add(lambda err=str(e), n=game['name']:
                             self.log_message(f"Download error for {n}: {err}"))
         
         threading.Thread(target=download, daemon=True).start()
@@ -11308,6 +11624,13 @@ class SyncWindow(Gtk.ApplicationWindow):
                 platform = game['platform']
                 platform_slug = game.get('platform_slug', platform)
                 file_name = game['file_name']
+
+                # Skip if another download path is already handling this ROM
+                if self.download_progress.get(rom_id, {}).get('downloading'):
+                    semaphore.release()
+                    if on_complete:
+                        on_complete(True)  # treat as success — already in progress
+                    return
 
                 # Track current download for progress updates
                 self._current_download_rom_id = rom_id
@@ -11352,6 +11675,21 @@ class SyncWindow(Gtk.ApplicationWindow):
                     progress_callback=lambda progress: self.update_download_progress(progress, rom_id),
                     cancellation_checker=is_cancelled
                 )
+
+                # Child-file variants cannot be downloaded via their own ROM ID (404).
+                # Fall back to downloading via the parent folder ROM + file_id.
+                if not download_success and 'HTTP 404' in (message or '') and game.get('_fs_extension') and (game.get('_parent_rom') or game.get('_siblings')):
+                    self.log_message(f"  ↩ Direct download 404; trying via parent folder ROM...")
+                    _p_success, _p_msg, _p_path = self._download_via_parent_rom(
+                        game, file_name, platform_dir,
+                        lambda progress: self.update_download_progress(progress, rom_id),
+                        is_cancelled
+                    )
+                    if _p_success:
+                        download_success = True
+                        message = _p_msg
+                        if _p_path:
+                            download_path = _p_path
 
                 if download_success:
                     success = True
