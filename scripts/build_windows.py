@@ -84,12 +84,12 @@ def build_exe(icon_path):
         str(SRC_DIR / "romm_sync_app.py"),
         f"--name=RomM-RetroArch-Sync",
         f"--distpath={DIST_DIR}",
-        f"--buildpath={BUILD_DIR}/build",
+        f"--workpath={BUILD_DIR}/build",
         f"--specpath={BUILD_DIR}",
         "--onefile",  # Create single executable
         "--windowed",  # No console window
         "--noconfirm",
-        "--add-data=requirements.txt:.",
+        f"--add-data={PROJECT_ROOT / 'requirements.txt'}{os.pathsep}.",
     ]
     
     # Add icon if available
