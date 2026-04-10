@@ -89,7 +89,7 @@ $env:PATH = "C:\gtk4-runtime\bin;" + $env:PATH
 [Environment]::SetEnvironmentVariable("PATH", "C:\gtk4-runtime\bin;$env:PATH", [EnvironmentVariableTarget]::User)
 
 # 4. Verify GTK4 is in PATH:
-pkg-config --modversion gtk+-4.0
+pkg-config --modversion gtk4
 
 # 5. Install Python build requirements
 pip install -r requirements-build.txt
@@ -170,7 +170,7 @@ makensis scripts/installer.nsi
 
 - **GTK4 Pre-built + pip**:
   - Verify GTK4 bin folder is in PATH: `echo $env:PATH` (PowerShell) or `echo %PATH%` (cmd)
-  - Test GTK4 directly: `pkg-config --modversion gtk+-4.0`
+  - Test GTK4 directly: `pkg-config --modversion gtk4`
   - If not found, add manually in PowerShell: `$env:PATH = "C:\gtk4-runtime\bin;" + $env:PATH`
   - Or set permanently via System Environment Variables
 

@@ -35,7 +35,7 @@ jobs:
     - name: Verify GTK4
       shell: bash -el {0}
       run: |
-        pkg-config --modversion gtk+-4.0
+        pkg-config --modversion gtk4
         python -c "import gi; gi.require_version('Gtk', '4.0'); from gi.repository import Gtk; print('GTK4 import successful')"
     
     - name: Build Windows executable
