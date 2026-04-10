@@ -1,0 +1,95 @@
+name: Build Windows Installer
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+jobs:
+  build-exe:
+    runs-on: windows-latest
+    outputs:
+      exe-path: ${{ steps.build.outputs.exe-path }}
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Miniconda
+      uses: conda-incubator/setup-miniconda@v2
+      with:
+        auto-update-conda: true
+        python-version: '3.10'
+        conda-channels: conda-forge
+        use-only-tar-bz2: true
+        auto-activate-base: false
+    
+    - name: Install GTK4 and build tools
+      shell: bash -l {0}
+      run: |
+        conda install -c conda-forge gtk=4 libadwaita pygobject -y
+        pip install -r requirements-build.txt
+    
+    - name: Build executable
+      id: build
+      shell: bash -l {0}
+      run: |
+        python scripts/build_windows.py
+        echo "exe-path=dist/RomM-RetroArch-Sync.exe" >> $GITHUB_OUTPUT
+    
+    - name: Upload exe artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: windows-exe
+        path: dist/RomM-RetroArch-Sync.exe
+
+  build-installer:
+    needs: build-exe
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Download exe artifact
+      uses: actions/download-artifact@v3
+      with:
+        name: windows-exe
+        path: dist
+    
+    - name: Install NSIS
+      run: |
+        choco install nsis -y
+    
+    - name: Build installer
+      shell: cmd
+      run: |
+        "C:\Program Files (x86)\NSIS\makensis.exe" scripts\installer.nsi
+    
+    - name: Upload installer artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: windows-installer
+        path: dist/RomM-RetroArch-Sync-v*.exe
+        retention-days: 30
+    
+    - name: Create GitHub Release (tags only)
+      if: startsWith(github.ref, 'refs/tags/v')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          dist/RomM-RetroArch-Sync.exe
+          dist/RomM-RetroArch-Sync-v*.exe
+        draft: false
+        prerelease: false
+        body: |
+          ## RomM-RetroArch Sync Windows Build
+          
+          ### Files:
+          - **RomM-RetroArch-Sync.exe** - Standalone executable (portable)
+          - **RomM-RetroArch-Sync-v*.exe** - Installer (includes uninstall)
+          
+          ### Instructions:
+          - **Portable:** Run `RomM-RetroArch-Sync.exe` directly
+          - **Installer:** Run the installer and follow the wizard
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
