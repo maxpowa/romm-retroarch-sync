@@ -27,11 +27,13 @@ from watchdog.events import FileSystemEventHandler
 import queue
 from collections import defaultdict
 
-# Fix SSL certificate path for AppImage environment
-# Use system certificates instead of bundled certifi
+# Fix SSL certificate path for AppImage environment (Linux only)
+# On Windows, let requests/certifi use their own bundled certs
 import ssl
-os.environ['REQUESTS_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
-os.environ['SSL_CERT_FILE'] = '/etc/ssl/certs/ca-certificates.crt'
+import platform
+if platform.system() == 'Linux':
+    os.environ['REQUESTS_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
+    os.environ['SSL_CERT_FILE'] = '/etc/ssl/certs/ca-certificates.crt'
 
 gi.require_version('Gtk', '4.0')
 

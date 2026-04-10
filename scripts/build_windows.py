@@ -151,7 +151,7 @@ def collect_gtk_binaries():
     return binaries
 
 
-def build_exe(icon_path):
+def build_exe(icon_path, debug=False):
     """Build the executable using PyInstaller"""
 
     hidden_imports = [
@@ -197,8 +197,9 @@ def build_exe(icon_path):
         f"--workpath={BUILD_DIR}/build",
         f"--specpath={BUILD_DIR}",
         "--onefile",
-        "--windowed",
         "--noconfirm",
+        # debug=True: shows a console window so exceptions are visible
+        *([] if debug else ["--windowed"]),
         f"--runtime-hook={RUNTIME_HOOK}",
     ]
 
@@ -241,23 +242,27 @@ def post_build_info():
 
 def main():
     """Main build process"""
+    import argparse
+    parser = argparse.ArgumentParser(description="Build RomM-RetroArch Sync for Windows")
+    parser.add_argument("--debug", action="store_true",
+                        help="Keep console window open so startup errors are visible")
+    args = parser.parse_args()
+
     print("RomM-RetroArch Sync - Windows Build")
+    if args.debug:
+        print("[DEBUG MODE: console window will be visible]")
     print("=" * 50)
     print()
-    
-    # Verify environment
+
     check_dependencies()
     print()
-    
-    # Prepare assets
+
     icon = prepare_icon()
     print()
-    
-    # Build executable
-    build_exe(icon)
+
+    build_exe(icon, debug=args.debug)
     print()
-    
-    # Display results
+
     post_build_info()
 
 if __name__ == "__main__":
