@@ -46,7 +46,7 @@ conda create -n romm-build python=3.10 -y
 conda activate romm-build
 
 # Install GTK4 and dependencies via conda-forge
-conda install -c conda-forge gtk=4 libadwaita pygobject -y
+conda install -c conda-forge gtk4 libadwaita pygobject pyinstaller pkg-config -y
 
 # Install build requirements
 pip install -r requirements-build.txt
@@ -161,7 +161,7 @@ makensis scripts/installer.nsi
 
 - **Anaconda**: 
   - Verify conda environment is activated: `conda activate romm-build`
-  - Reinstall GTK: `conda install -c conda-forge gtk=4 libadwaita pygobject -y`
+  - Reinstall GTK: `conda install -c conda-forge gtk4 libadwaita pygobject pyinstaller pkg-config -y`
 
 - **MSYS2**: 
   - Use MinGW 64-bit terminal, NOT MSYS2 terminal
@@ -178,8 +178,8 @@ makensis scripts/installer.nsi
 
 **Solution**:
 ```bash
-# Reinstall PyGObject with correct binaries
-pip install --force-reinstall PyGObject
+# Install PyGObject from conda or MSYS2, not pip, on Windows
+conda install -c conda-forge pygobject -y
 ```
 
 ### Issue: "Icon file not found"

@@ -84,7 +84,7 @@ if ($UseMSYS2) {
     
     # Install dependencies
     Write-Host "`n📦 Installing GTK4 and dependencies..." -ForegroundColor Cyan
-    & conda install -c conda-forge gtk=4 libadwaita pygobject -y
+    & conda install -c conda-forge gtk4 libadwaita pygobject pyinstaller pkg-config -y
     
     if (-not $?) {
         Write-Host "❌ Failed to install GTK4" -ForegroundColor Red

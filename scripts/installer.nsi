@@ -5,7 +5,7 @@
 
 ; Basic settings
 Name "RomM-RetroArch Sync"
-OutFile "dist\RomM-RetroArch-Sync-v1.5.0-installer.exe"
+OutFile "..\dist\RomM-RetroArch-Sync-v1.5.0-installer.exe"
 InstallDir "$PROGRAMFILES\RomM-RetroArch-Sync"
 InstallDirRegKey HKLM "Software\RomM-RetroArch-Sync" "Install_Dir"
 
@@ -25,15 +25,15 @@ Section "Install"
   SetOutPath "$INSTDIR"
   
   ; Copy executable
-  File "dist\RomM-RetroArch-Sync.exe"
+  File "..\dist\RomM-RetroArch-Sync.exe"
   
   ; Copy assets
   SetOutPath "$INSTDIR\assets\icons"
-  File /r "assets\icons\*.*"
+  File /r "..\assets\icons\*.*"
   
   ; Copy JSON data
   SetOutPath "$INSTDIR"
-  File "romm_platform_slugs.json"
+  File "..\romm_platform_slugs.json"
   
   ; Create Start Menu shortcuts
   SetShellVarContext all
