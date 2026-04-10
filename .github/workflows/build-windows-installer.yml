@@ -13,15 +13,14 @@ jobs:
       exe-path: ${{ steps.build.outputs.exe-path }}
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Set up Miniconda
-      uses: conda-incubator/setup-miniconda@v2
+      uses: conda-incubator/setup-miniconda@v3
       with:
         auto-update-conda: true
         python-version: '3.10'
         conda-channels: conda-forge
-        use-only-tar-bz2: true
         auto-activate-base: false
     
     - name: Install GTK4 and build tools
@@ -38,7 +37,7 @@ jobs:
         echo "exe-path=dist/RomM-RetroArch-Sync.exe" >> $GITHUB_OUTPUT
     
     - name: Upload exe artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: windows-exe
         path: dist/RomM-RetroArch-Sync.exe
@@ -48,10 +47,10 @@ jobs:
     runs-on: windows-latest
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Download exe artifact
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: windows-exe
         path: dist
@@ -66,7 +65,7 @@ jobs:
         "C:\Program Files (x86)\NSIS\makensis.exe" scripts\installer.nsi
     
     - name: Upload installer artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: windows-installer
         path: dist/RomM-RetroArch-Sync-v*.exe
