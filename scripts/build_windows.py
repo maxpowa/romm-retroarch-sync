@@ -28,20 +28,20 @@ def check_dependencies():
     try:
         import PyInstaller
         import gi
-        print("✅ Build dependencies verified")
+        print("Build dependencies verified")
     except ImportError as e:
-        print(f"❌ Missing dependency: {e}")
+        print(f"Missing dependency: {e}")
         print("\nInstall with: pip install -r requirements-build.txt")
         sys.exit(1)
 
 def prepare_icon():
     """Prepare or create application icon"""
     if not ICON_FILE.exists():
-        print("⚠️  Icon not found at:", ICON_FILE)
+        print("Warning: icon not found at:", ICON_FILE)
         print("   Using default PyInstaller icon")
         return None
     
-    print(f"✅ Icon found: {ICON_FILE}")
+    print(f"Icon found: {ICON_FILE}")
     return str(ICON_FILE)
 
 def collect_gtk_dependencies():
@@ -104,15 +104,15 @@ def build_exe(icon_path):
     for src, dest in datas:
         args.append(f"--add-data={src}{os.pathsep}{dest}")
     
-    print("\n🔨 Building executable...")
+    print("\nBuilding executable...")
     print(f"   Command: pyinstaller {' '.join(args)}")
     print()
     
     try:
         PyInstaller.__main__.run(args)
-        print("\n✅ Build successful!")
+        print("\nBuild successful")
     except Exception as e:
-        print(f"\n❌ Build failed: {e}")
+        print(f"\nBuild failed: {e}")
         sys.exit(1)
 
 def post_build_info():
@@ -121,18 +121,18 @@ def post_build_info():
     
     if exe_path.exists():
         size_mb = exe_path.stat().st_size / (1024 * 1024)
-        print(f"\n📦 Executable: {exe_path}")
+        print(f"\nExecutable: {exe_path}")
         print(f"   Size: {size_mb:.2f} MB")
-        print(f"\n🚀 To run the application:")
+        print(f"\nTo run the application:")
         print(f"   {exe_path}")
-        print(f"\n📦 To create an installer:")
+        print(f"\nTo create an installer:")
         print(f"   makensis scripts/installer.nsi")
     else:
-        print(f"\n⚠️  Executable not found at {exe_path}")
+        print(f"\nWarning: executable not found at {exe_path}")
 
 def main():
     """Main build process"""
-    print("🚀 RomM-RetroArch Sync - Windows Build")
+    print("RomM-RetroArch Sync - Windows Build")
     print("=" * 50)
     print()
     
